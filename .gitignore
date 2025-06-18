@@ -1,41 +1,193 @@
-# Compiled Lua sources
-luac.out
+-- Services
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local TextService = game:GetService("TextService")
+local Players = game:GetService("Players")
 
-# luarocks build files
-*.src.rock
-*.zip
-*.tar.gz
+-- Player
+local Player = Players.LocalPlayer
 
-# Object files
-*.o
-*.os
-*.ko
-*.obj
-*.elf
+-- Main GUI container
+local NotifGui = Instance.new("ScreenGui")
+NotifGui.Name = "AkaliNotif"
+NotifGui.Parent = RunService:IsStudio() and Player:WaitForChild("PlayerGui") or game:GetService("CoreGui")
 
-# Precompiled Headers
-*.gch
-*.pch
+-- Notification Frame
+local Container = Instance.new("Frame")
+Container.Name = "Container"
+Container.Position = UDim2.new(0, 20, 0.5, -20)
+Container.Size = UDim2.new(0, 300, 0.5, 0)
+Container.BackgroundTransparency = 1
+Container.Parent = NotifGui
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-*.def
-*.exp
+-- Constants
+local PADDING = 10
+local DESCRIPTION_PADDING = 10
+local TWEEN_TIME = 1
+local FADE_DURATION = 0.25
+local EASING_STYLE = Enum.EasingStyle.Sine
+local EASING_DIRECTION = Enum.EasingDirection.Out
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+-- Style
+local TITLE_FONT = Enum.Font.GothamSemibold
+local DESC_FONT = Enum.Font.Gotham
+local FONT_SIZE = 14
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+-- Cache
+local NotificationQueue = {}
+local CachedObjects = {}
+local LastTick = tick()
 
+-- Utilities
+local function CreateImage(id, isButton)
+	local image = Instance.new(isButton and "ImageButton" or "ImageLabel")
+	image.Image = id
+	image.BackgroundTransparency = 1
+	return image
+end
+
+local function CreateRoundBackground()
+	local bg = CreateImage("rbxassetid://5761488251")
+	bg.ScaleType = Enum.ScaleType.Slice
+	bg.SliceCenter = Rect.new(2, 2, 298, 298)
+	bg.ImageColor3 = Color3.fromRGB(30, 30, 30)
+	return bg
+end
+
+local function CreateShadow()
+	local shadow = CreateImage("rbxassetid://5761498316")
+	shadow.ScaleType = Enum.ScaleType.Slice
+	shadow.SliceCenter = Rect.new(17, 17, 283, 283)
+	shadow.Size = UDim2.fromScale(1, 1) + UDim2.fromOffset(30, 30)
+	shadow.Position = UDim2.fromOffset(-15, -15)
+	shadow.ImageColor3 = Color3.fromRGB(30, 30, 30)
+	return shadow
+end
+
+local function CreateTextLabel(text, font, size)
+	local label = Instance.new("TextLabel")
+	label.Text = text
+	label.Font = font
+	label.TextSize = size
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.BackgroundTransparency = 1
+	label.RichText = true
+	return label
+end
+
+local function CalculateBounds(objects)
+	local y = 0
+	for _, obj in ipairs(objects) do
+		y += obj.AbsoluteSize.Y
+	end
+	return y
+end
+
+local function FadeOutGui(gui)
+	local classType = gui.ClassName
+	local propertyMap = {
+		TextLabel = "TextTransparency",
+		TextButton = "TextTransparency",
+		Frame = "BackgroundTransparency",
+		ImageLabel = "ImageTransparency",
+		ImageButton = "ImageTransparency"
+	}
+
+	local prop = propertyMap[classType]
+	if prop then
+		local tween = TweenService:Create(gui, TweenInfo.new(FADE_DURATION, EASING_STYLE, EASING_DIRECTION), {
+			[prop] = 1
+		})
+		tween:Play()
+	end
+end
+
+local function FadeOutAfter(gui, delayTime)
+	task.delay(delayTime, function()
+		FadeOutGui(gui)
+		for _, child in ipairs(gui:GetDescendants()) do
+			FadeOutGui(child)
+		end
+		task.wait(FADE_DURATION)
+		for i, v in ipairs(NotificationQueue) do
+			if v[1] == gui then
+				table.remove(NotificationQueue, i)
+				break
+			end
+		end
+	end)
+end
+
+-- RenderStep logic for animation
+RunService:BindToRenderStep("NotificationUpdate", Enum.RenderPriority.First.Value, function()
+	local delta = tick() - LastTick
+	local previous = {}
+
+	for _, notif in ipairs(NotificationQueue) do
+		local gui, progress, complete = unpack(notif)
+		if not complete then
+			progress = math.clamp(progress + delta / TWEEN_TIME, 0, 1)
+			notif[2] = progress
+			if progress >= 1 then
+				notif[3] = true
+			end
+		end
+
+		local targetY = CalculateBounds(previous) + (#previous * PADDING)
+		local newY = gui.Position.Y.Offset:Lerp(targetY, TweenService:GetValue(progress, EASING_STYLE, EASING_DIRECTION))
+		gui.Position = UDim2.new(0, 0, 0, newY)
+
+		table.insert(previous, gui)
+	end
+
+	CachedObjects = previous
+	LastTick = tick()
+end)
+
+-- Main API
+return {
+	Notify = function(props)
+		props = typeof(props) == "table" and props or {}
+
+		local title = props.Title
+		local desc = props.Description
+		local duration = props.Duration or 5
+
+		if not (title or desc) then return end
+
+		local height = 0
+		if title then height += 26 end
+
+		if desc then
+			local textSize = TextService:GetTextSize(desc, FONT_SIZE, DESC_FONT, Vector2.new(280, math.huge))
+			local lines = math.ceil(textSize.X / (Container.AbsoluteSize.X - DESCRIPTION_PADDING))
+			height += (textSize.Y * lines) + 8
+		end
+
+		local background = CreateRoundBackground()
+		background.Size = UDim2.new(1, 0, 0, height)
+		background.Position = UDim2.new(-1, 20, 0, CalculateBounds(CachedObjects) + (#CachedObjects * PADDING))
+		background.Parent = Container
+
+		if title then
+			local titleLabel = CreateTextLabel(title, TITLE_FONT, FONT_SIZE)
+			titleLabel.Size = UDim2.new(1, -10, 0, 26)
+			titleLabel.Position = UDim2.fromOffset(10, 0)
+			titleLabel.Parent = background
+		end
+
+		if desc then
+			local descLabel = CreateTextLabel(desc, DESC_FONT, FONT_SIZE)
+			descLabel.TextWrapped = true
+			descLabel.Size = UDim2.new(1, -DESCRIPTION_PADDING, 0, height - (title and 26 or 0))
+			descLabel.Position = UDim2.fromOffset(10, title and 26 or 0)
+			descLabel.TextYAlignment = title and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center
+			descLabel.Parent = background
+		end
+
+		CreateShadow().Parent = background
+		table.insert(NotificationQueue, {background, 0, false})
+		FadeOutAfter(background, duration)
+	end
+}
